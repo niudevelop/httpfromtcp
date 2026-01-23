@@ -3,49 +3,85 @@ package headers
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 )
+
+const crlf = "\r\n"
 
 type Headers map[string]string
 
 func NewHeaders() Headers {
-	return make(Headers)
+	return map[string]string{}
 }
 
-// Parse consumes at most one header line (ending in CRLF) per call.
 func (h Headers) Parse(data []byte) (n int, done bool, err error) {
-	crlf := []byte("\r\n")
-	i := bytes.Index(data, crlf)
-	if i == -1 {
-		return 0, false, nil // not enough data yet
+	idx := bytes.Index(data, []byte(crlf))
+	if idx == -1 {
+		return 0, false, nil
 	}
-
-	// If CRLF is at the start, headers are done.
-	if i == 0 {
+	if idx == 0 {
+		// the empty line
+		// headers are done, consume the CRLF
 		return 2, true, nil
 	}
 
-	line := string(data[:i]) // excludes CRLF
+	parts := bytes.SplitN(data[:idx], []byte(":"), 2)
+	key := strings.ToLower(string(parts[0]))
 
-	colon := strings.IndexByte(line, ':')
-	if colon <= 0 {
-		return 0, false, fmt.Errorf("invalid header line")
+	if key != strings.TrimRight(key, " ") {
+		return 0, false, fmt.Errorf("invalid header name: %s", key)
 	}
 
-	rawKey := line[:colon]
-	// Reject any whitespace around/in the key (catches "Host : ..." and " Host: ...")
-	if strings.TrimSpace(rawKey) != rawKey || strings.IndexFunc(rawKey, func(r rune) bool {
-		return r == ' ' || r == '\t'
-	}) != -1 {
-		return 0, false, fmt.Errorf("invalid header key spacing")
+	value := bytes.TrimSpace(parts[1])
+	key = strings.TrimSpace(key)
+	if !validTokens([]byte(key)) {
+		return 0, false, fmt.Errorf("invalid header token found: %s", key)
+	}
+	fieldValue, _ := h.Get(key)
+	if fieldValue != "" {
+		fieldValue += ", " + string(value)
+	} else {
+		fieldValue = string(value)
 	}
 
-	rawVal := line[colon+1:]
-	key := rawKey
-	val := strings.TrimSpace(rawVal)
+	h.Set(key, fieldValue)
+	return idx + 2, false, nil
+}
 
-	h[key] = val
+func (h Headers) Set(key, value string) {
+	key = strings.ToLower(key)
+	h[key] = value
+}
 
-	// consumed: header line + CRLF
-	return i + 2, false, nil
+func (h Headers) Get(key string) (string, bool) {
+	key = strings.ToLower(key)
+	fieldValue, ok := h[key]
+	if !ok {
+		return "", ok
+	}
+	return fieldValue, ok
+}
+
+var tokenChars = []byte{'!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'}
+
+// validTokens checks if the data contains only valid tokens
+// or characters that are allowed in a token
+func validTokens(data []byte) bool {
+	for _, c := range data {
+		if !isTokenChar(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isTokenChar(c byte) bool {
+	if c >= 'A' && c <= 'Z' ||
+		c >= 'a' && c <= 'z' ||
+		c >= '0' && c <= '9' {
+		return true
+	}
+
+	return slices.Contains(tokenChars, c)
 }
